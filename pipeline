@@ -1,0 +1,74 @@
+pipeline {
+    agent any
+
+    environment {
+        // Jenkins Credentials ID jo aapne setup kiya hoga
+        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-key-id')
+        AWS_DEFAULT_REGION    = 'ap-south-1'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                // GitHub se latest code download karna
+                checkout scm
+            }
+        }
+
+        stage('Prepare Lambda Packages') {
+            steps {
+                script {
+                    // 1. Processor Lambda ke liye dependencies install karna aur zip banana
+                    // Note: 'pandas' aur 'pyarrow' heavy hote hain, isliye clean workspace zaroori hai
+                    sh '''
+                        mkdir -p lambda_dist
+                        cp processor.py lambda_dist/
+                        # Dependencies ko folder mein install karna (Lambda requirement)
+                        pip install pandas pyarrow -t lambda_dist/
+                        cd lambda_dist && zip -r ../processor.zip .
+                        cd ..
+                    '''
+
+                    // 2. Reporter Lambda ka zip banana (Isme extra dependencies nahi chahiye)
+                    sh 'zip reporter.zip reporter.py'
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                // Terraform environment ko initialize karna
+                sh 'terraform init'
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                // Preview dekhna ki kya changes hone wale hain
+                sh 'terraform plan -out=tfplan'
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                // Changes ko AWS par deploy karna
+                // Assignment ke liye auto-approve use kar rahe hain
+                sh 'terraform apply -auto-approve tfplan'
+            }
+        }
+    }
+
+    post {
+        always {
+            // Cleanup: Deployment ke baad temporary zip files hatana
+            sh 'rm -rf lambda_dist processor.zip reporter.zip tfplan'
+        }
+        success {
+            echo 'Deployment Successful! Pipeline is live.'
+        }
+        failure {
+            echo 'Deployment Failed. Please check the logs.'
+        }
+    }
+}
